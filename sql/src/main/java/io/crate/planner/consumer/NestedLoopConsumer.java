@@ -24,7 +24,10 @@ package io.crate.planner.consumer;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import io.crate.analyze.*;
-import io.crate.analyze.relations.*;
+import io.crate.analyze.relations.AnalyzedRelation;
+import io.crate.analyze.relations.JoinPair;
+import io.crate.analyze.relations.QueriedDocTable;
+import io.crate.analyze.relations.QueriedRelation;
 import io.crate.analyze.symbol.*;
 import io.crate.exceptions.ValidationException;
 import io.crate.metadata.Functions;
@@ -91,11 +94,9 @@ class NestedLoopConsumer implements Consumer {
 
             List<RelationColumn> nlOutputs = new ArrayList<>();
             final Map<Symbol, Symbol> symbolMap = new HashMap<>();
-            QueriedRelation left;
-            QueriedRelation right;
+            QueriedRelation left = statement.left();
+            QueriedRelation right = statement.right();
             try {
-                left = SubRelationConverter.INSTANCE.process(statement.left().relation(), statement.left());
-                right = SubRelationConverter.INSTANCE.process(statement.right().relation(), statement.right());
                 addOutputsAndSymbolMap(statement.left().querySpec().outputs(), statement.leftName(), nlOutputs, symbolMap);
                 addOutputsAndSymbolMap(statement.right().querySpec().outputs(), statement.rightName(), nlOutputs, symbolMap);
             } catch (ValidationException e) {
@@ -247,8 +248,9 @@ class NestedLoopConsumer implements Consumer {
             if (joinCondition != null) {
                 joinCondition = InputColumns.create(joinCondition, nlOutputs);
                 assert joinCondition instanceof Function : "Only function symbols are valid join conditions";
-                boolean hasRelCol = SymbolVisitors.any(s -> s instanceof RelationColumn, joinCondition);
-                assert  !hasRelCol : "RelationColumns are not valid join condition arguments";
+                boolean hasColumns = SymbolVisitors.any(Symbols.IS_COLUMN, joinCondition);
+                assert !hasColumns : "Processed joinCondition must not contain column symbols.\njoinCondition="
+                                     + joinCondition + " nlOutputs=" + nlOutputs;
             }
 
             List<Symbol> postNLOutputs = Lists.newArrayList(querySpec.outputs());
@@ -288,6 +290,9 @@ class NestedLoopConsumer implements Consumer {
                 left.querySpec().outputs().size(),
                 right.querySpec().outputs().size()
             );
+
+             // postNLOutputs includes orderBy only symbols, these need to be stripped in the handlerMerge
+            int postMergeNumOutput = querySpec.outputs().size();
             if (isDistributed) {
                 return new NestedLoop(
                     nl,
@@ -296,10 +301,11 @@ class NestedLoopConsumer implements Consumer {
                     limits.finalLimit(),
                     limits.offset(),
                     limit,
+                    postMergeNumOutput,
                     PositionalOrderBy.of(orderByBeforeSplit, postNLOutputs)
                 );
             } else {
-                return new NestedLoop(nl, leftPlan, rightPlan, TopN.NO_LIMIT, 0, limit, null);
+                return new NestedLoop(nl, leftPlan, rightPlan, TopN.NO_LIMIT, 0, limit, postMergeNumOutput, null);
             }
         }
 
@@ -346,37 +352,6 @@ class NestedLoopConsumer implements Consumer {
                 return false;
             }
             return true;
-        }
-    }
-
-    private static class SubRelationConverter extends AnalyzedRelationVisitor<RelationSource, QueriedRelation> {
-
-        static final SubRelationConverter INSTANCE = new SubRelationConverter();
-
-        @Override
-        public QueriedRelation visitTableRelation(TableRelation tableRelation, RelationSource source) {
-            return new QueriedTable(tableRelation, source.querySpec());
-        }
-
-        @Override
-        public QueriedRelation visitDocTableRelation(DocTableRelation tableRelation, RelationSource source) {
-            return new QueriedDocTable(tableRelation, source.querySpec());
-        }
-
-        @Override
-        public QueriedRelation visitTwoTableJoin(TwoTableJoin twoTableJoin, RelationSource context) {
-            return twoTableJoin;
-        }
-
-        @Override
-        public QueriedRelation visitTableFunctionRelation(TableFunctionRelation tableFunctionRelation,
-                                                          RelationSource context) {
-            return new QueriedTable(tableFunctionRelation, context.querySpec());
-        }
-
-        @Override
-        protected QueriedTableRelation visitAnalyzedRelation(AnalyzedRelation relation, RelationSource source) {
-            throw new ValidationException("JOIN with sub queries is not supported");
         }
     }
 }

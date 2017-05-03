@@ -100,19 +100,19 @@ final class RelationNormalizer {
             // must create a new MultiSourceSelect because paths and query spec changed
             mss = MultiSourceSelect.createWithPushDown(mss, querySpec);
             if (mss.sources().size() == 2) {
-                Iterator<RelationSource> it = mss.sources().values().iterator();
-                RelationSource leftSource = it.next();
-                RelationSource rightSource = it.next();
-                QualifiedName left = leftSource.relation().getQualifiedName();
-                QualifiedName right = rightSource.relation().getQualifiedName();
+                Iterator<AnalyzedRelation> it = mss.sources().values().iterator();
+                QueriedRelation leftRelation = (QueriedRelation) it.next();
+                QueriedRelation rightRelation = (QueriedRelation) it.next();
+                QualifiedName left = leftRelation.getQualifiedName();
+                QualifiedName right = rightRelation.getQualifiedName();
                 Rewriter.tryRewriteOuterToInnerJoin(
                     normalizer,
                     JoinPairs.ofRelationsWithMergedConditions(left, right, mss.joinPairs(), false),
                     mss.querySpec(),
                     left,
                     right,
-                    leftSource.querySpec(),
-                    rightSource.querySpec());
+                    leftRelation.querySpec(),
+                    rightRelation.querySpec());
             }
             return mss;
         }

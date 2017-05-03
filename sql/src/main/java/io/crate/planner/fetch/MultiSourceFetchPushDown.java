@@ -23,14 +23,17 @@
 package io.crate.planner.fetch;
 
 import io.crate.analyze.MultiSourceSelect;
-import io.crate.analyze.RelationSource;
+import io.crate.analyze.relations.AnalyzedRelation;
 import io.crate.analyze.relations.DocTableRelation;
+import io.crate.analyze.relations.QueriedDocTable;
+import io.crate.analyze.relations.QueriedRelation;
 import io.crate.analyze.symbol.*;
 import io.crate.metadata.DocReferences;
 import io.crate.metadata.Reference;
 import io.crate.metadata.RowGranularity;
 import io.crate.metadata.TableIdent;
 import io.crate.metadata.doc.DocSysColumns;
+import io.crate.metadata.doc.DocTableInfo;
 import io.crate.planner.node.fetch.FetchSource;
 import io.crate.sql.tree.QualifiedName;
 import io.crate.types.DataTypes;
@@ -67,11 +70,11 @@ class MultiSourceFetchPushDown {
         ArrayList<Symbol> mssOutputs = new ArrayList<>(
             statement.sources().size() + statement.requiredForQuery().size());
 
-        for (Map.Entry<QualifiedName, RelationSource> entry : statement.sources().entrySet()) {
-            RelationSource source = entry.getValue();
-            if (!(source.relation() instanceof DocTableRelation)) {
+        for (Map.Entry<QualifiedName, AnalyzedRelation> entry : statement.sources().entrySet()) {
+            QueriedRelation relation = (QueriedRelation) entry.getValue();
+            if (!(relation instanceof QueriedDocTable)) {
                 int index = 0;
-                for (Symbol output : source.querySpec().outputs()) {
+                for (Symbol output : relation.querySpec().outputs()) {
                     RelationColumn rc = new RelationColumn(entry.getKey(), index++, output.valueType());
                     mssOutputs.add(rc);
                     mssOutputMap.put(output, rc);
@@ -80,20 +83,21 @@ class MultiSourceFetchPushDown {
                 continue;
             }
 
-            DocTableRelation rel = (DocTableRelation) source.relation();
-            HashSet<Field> canBeFetched = filterByRelation(statement.canBeFetched(), rel);
+            DocTableRelation tableRelation = ((QueriedDocTable) relation).tableRelation();
+            DocTableInfo tableInfo = tableRelation.tableInfo();
+            HashSet<Field> canBeFetched = forSubRelation(statement.canBeFetched(), relation, tableRelation);
             if (!canBeFetched.isEmpty()) {
                 RelationColumn fetchIdColumn = new RelationColumn(entry.getKey(), 0, DataTypes.LONG);
                 mssOutputs.add(fetchIdColumn);
                 InputColumn fetchIdInput = new InputColumn(mssOutputs.size() - 1);
 
                 ArrayList<Symbol> qtOutputs = new ArrayList<>(
-                    source.querySpec().outputs().size() - canBeFetched.size() + 1);
-                Reference fetchId = rel.tableInfo().getReference(DocSysColumns.FETCHID);
+                    relation.querySpec().outputs().size() - canBeFetched.size() + 1);
+                Reference fetchId = tableInfo.getReference(DocSysColumns.FETCHID);
                 qtOutputs.add(fetchId);
 
-                for (Symbol output : source.querySpec().outputs()) {
-                    if (!canBeFetched.contains(output)) {
+                for (Symbol output : relation.querySpec().outputs()) {
+                    if (!(output instanceof Field) || !canBeFetched.contains(output)) {
                         qtOutputs.add(output);
                         RelationColumn rc = new RelationColumn(entry.getKey(),
                             qtOutputs.size() - 1, output.valueType());
@@ -104,14 +108,14 @@ class MultiSourceFetchPushDown {
                 }
                 for (Field field : canBeFetched) {
                     FetchReference fr = new FetchReference(
-                        fetchIdInput, DocReferences.toSourceLookup(rel.resolveField(field)));
-                    allocateFetchedReference(fr, rel);
+                        fetchIdInput, DocReferences.toSourceLookup(tableRelation.resolveField(tableRelation.getField(field.path()))));
+                    allocateFetchedReference(fr, tableInfo.partitionedByColumns());
                     topLevelOutputMap.put(field, fr);
                 }
-                source.querySpec().outputs(qtOutputs);
+                relation.querySpec().outputs(qtOutputs);
             } else {
                 int index = 0;
-                for (Symbol output : source.querySpec().outputs()) {
+                for (Symbol output : relation.querySpec().outputs()) {
                     RelationColumn rc = new RelationColumn(entry.getKey(), index++, output.valueType());
                     mssOutputs.add(rc);
                     mssOutputMap.put(output, rc);
@@ -127,20 +131,20 @@ class MultiSourceFetchPushDown {
         }
     }
 
-    private static HashSet<Field> filterByRelation(Set<Field> fields, DocTableRelation rel) {
+    private static HashSet<Field> forSubRelation(Set<Field> fields, AnalyzedRelation rel, DocTableRelation tableRelation) {
         HashSet<Field> filteredFields = new HashSet<>();
         for (Field field : fields) {
             if (field.relation() == rel) {
-                filteredFields.add(field);
+                filteredFields.add(tableRelation.getField(field.path()));
             }
         }
         return filteredFields;
     }
 
-    private void allocateFetchedReference(FetchReference fr, DocTableRelation rel) {
+    private void allocateFetchedReference(FetchReference fr, List<Reference> partitionedByColumns) {
         FetchSource fs = fetchSources.get(fr.ref().ident().tableIdent());
         if (fs == null) {
-            fs = new FetchSource(rel.tableInfo().partitionedByColumns());
+            fs = new FetchSource(partitionedByColumns);
             fetchSources.put(fr.ref().ident().tableIdent(), fs);
         }
         fs.fetchIdCols().add((InputColumn) fr.fetchId());
