@@ -284,9 +284,39 @@ public class CrateSettings implements ClusterStateListener {
         return referenceImplementationTree;
     }
 
+    private void buildGroupSettingReferenceTree(String prefix, Map.Entry<String, Settings> SettingEntry, Map<String, ReferenceImplementation> referenceMap) {
+        Map<String, String> settingsMap = SettingEntry.getValue().getAsMap();
+
+        if (!settingsMap.isEmpty()) {
+            buildReferenceTree(referenceMap,
+                CrateSetting.of(Setting.groupSetting(prefix + SettingEntry.getKey() + ".",
+                    Setting.Property.NodeScope),
+                    DataTypes.OBJECT));
+            for (Map.Entry<String, String> entry : settingsMap.entrySet()) {
+                String nestedPrefix = prefix + SettingEntry.getKey() + "." + entry.getKey();
+
+                buildReferenceTree(referenceMap,
+                    CrateSetting.of(Setting.simpleString(nestedPrefix,
+                        Setting.Property.NodeScope),
+                        DataTypes.STRING));
+            }
+        } else {
+            buildReferenceTree(referenceMap,
+                CrateSetting.of(Setting.simpleString(prefix + SettingEntry.getKey(),
+                    Setting.Property.NodeScope),
+                    DataTypes.STRING));
+        }
+    }
+
     private Map<String, ReferenceImplementation> buildReferenceTree() {
         Map<String, ReferenceImplementation> referenceMap = new HashMap<>(BUILT_IN_SETTINGS.size());
         for (CrateSetting crateSetting : BUILT_IN_SETTINGS) {
+            if (crateSetting.isGroupSetting()) {
+                Map<String, Settings> settingsMap = initialSettings.getGroups(crateSetting.getKey(), true);
+                for (Map.Entry<String, Settings> entry : settingsMap.entrySet()) {
+                    buildGroupSettingReferenceTree(crateSetting.getKey(), entry, referenceMap);
+                }
+            }
             buildReferenceTree(referenceMap, crateSetting);
         }
         return referenceMap;

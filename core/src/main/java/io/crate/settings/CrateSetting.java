@@ -66,4 +66,12 @@ public class CrateSetting<T> {
     public T getDefault() {
         return setting.getDefault(Settings.EMPTY);
     }
+
+    public boolean isGroupSetting() {
+        /**
+         * there is already a method called isGroupSetting in ES Setting class
+         * however it is package private.
+         */
+        return setting.getKey().endsWith(".");
+    }
 }
