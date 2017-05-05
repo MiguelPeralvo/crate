@@ -26,6 +26,7 @@ import io.crate.data.Input;
 import io.crate.operation.scalar.ScalarFunctionModule;
 import io.crate.types.DataType;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 public abstract class SubtractFunction extends ArithmeticFunction {
@@ -58,7 +59,29 @@ public abstract class SubtractFunction extends ArithmeticFunction {
             if (arg1Value == null) {
                 return null;
             }
-            return ((Number) arg0Value).doubleValue() - ((Number) arg1Value).doubleValue();
+            return BigDecimal.valueOf((double) arg0Value).doubleValue() - BigDecimal.valueOf((double) arg1Value).doubleValue();
+        }
+    }
+
+    private static class FloatSubtractFunction extends SubtractFunction {
+
+        FloatSubtractFunction(FunctionInfo info) {
+            super(info);
+        }
+
+        @Override
+        public Number evaluate(Input[] args) {
+            assert args.length == 2 : "number of args must be 2";
+            Object arg0Value = args[0].value();
+            Object arg1Value = args[1].value();
+
+            if (arg0Value == null) {
+                return null;
+            }
+            if (arg1Value == null) {
+                return null;
+            }
+            return ((Number) arg0Value).floatValue() - ((Number) arg1Value).floatValue();
         }
     }
 
@@ -89,7 +112,10 @@ public abstract class SubtractFunction extends ArithmeticFunction {
         @Override
         public FunctionImplementation getForTypes(List<DataType> dataTypes) throws IllegalArgumentException {
             if (containsTypesWithDecimal(dataTypes)) {
-                return new DoubleSubtractFunction(genDoubleInfo(NAME, dataTypes));
+                if (containsDouble(dataTypes)) {
+                    return new DoubleSubtractFunction(genDoubleInfo(NAME, dataTypes));
+                }
+                return new FloatSubtractFunction(genFloatInfo(NAME, dataTypes));
             }
             return new LongSubtractFunction(genLongInfo(NAME, dataTypes));
         }
