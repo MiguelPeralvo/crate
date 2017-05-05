@@ -21,22 +21,26 @@ package io.crate.operation.auth;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
 import io.crate.settings.SharedSettings;
+import org.apache.logging.log4j.Logger;
+import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsRequest;
+import org.elasticsearch.action.admin.cluster.settings.ClusterUpdateSettingsResponse;
+import org.elasticsearch.action.admin.cluster.settings.TransportClusterUpdateSettingsAction;
+import org.elasticsearch.cluster.*;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.inject.Inject;
+import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.settings.Settings;
 import org.jboss.netty.handler.ipfilter.CIDR4;
 
 import javax.annotation.Nullable;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 import java.util.function.Supplier;
 
 
-public class AuthenticationService implements Authentication {
+public class AuthenticationService implements Authentication, ClusterStateListener {
 
     private static final String DEFAULT_AUTH_METHOD = "trust";
     private static final String KEY_USER = "user";
@@ -56,15 +60,19 @@ public class AuthenticationService implements Authentication {
      */
     private Map<String, Map<String, String>> hbaConf;
     private boolean enabled;
-
+    private final TransportClusterUpdateSettingsAction transport;
+    private final Settings localStartupSettings;
     private final Map<String, Supplier<AuthenticationMethod>> authMethodRegistry = new HashMap<>();
+    private final Logger logger;
 
     @Inject
-    AuthenticationService(ClusterService clusterService, Settings settings) {
+    AuthenticationService(ClusterService clusterService, Settings settings, TransportClusterUpdateSettingsAction transport) {
+        logger = Loggers.getLogger(getClass(), settings);
+        this.transport = transport;
+        localStartupSettings = settings.filter(this::isHbaSetting);
         enabled = SharedSettings.AUTH_HOST_BASED_ENABLED_SETTING.setting().get(settings);
-        clusterService.getClusterSettings()
-            .addSettingsUpdateConsumer(SharedSettings.AUTH_HOST_BASED_ENABLED_SETTING.setting(), (s) -> { enabled = s; });
 
+        clusterService.add(this);
         updateHbaConfig(SharedSettings.AUTH_HOST_BASED_CONFIG_SETTING.setting().get(settings));
         clusterService.getClusterSettings()
             .addSettingsUpdateConsumer(SharedSettings.AUTH_HOST_BASED_CONFIG_SETTING.setting(), this::updateHbaConfig);
@@ -106,6 +114,7 @@ public class AuthenticationService implements Authentication {
     public AuthenticationMethod resolveAuthenticationType(String user, InetAddress address) {
         assert hbaConf != null : "hba configuration is missing";
         Optional<Map.Entry<String, Map<String, String>>> entry = getEntry(user, address);
+        logger.warn("=== entry: {} user: {}, address: {}", entry, user, address);
         if (entry.isPresent()) {
             String methodName = entry.get()
                 .getValue()
@@ -132,6 +141,56 @@ public class AuthenticationService implements Authentication {
             .filter(e -> Matchers.isValidUser(e, user))
             .filter(e -> Matchers.isValidAddress(e, address))
             .findFirst();
+    }
+
+    @Override
+    public void clusterChanged(ClusterChangedEvent event) {
+        if (event.nodesAdded()) {
+            if (event.nodesDelta().masterNodeChanged()) {
+                Settings existing = event.state().getMetaData().transientSettings().filter(this::isHbaSetting);
+                Settings newAuthSettings = settingsForUpdate(existing, localStartupSettings);
+                if (newAuthSettings.equals(existing)) {
+                    return;
+                }
+                if (logger.isTraceEnabled()) {
+                    logger.trace("Applying local auth settings to cluster.\nexisting: {}\nlocal:    {}\ndiff:     {}",
+                        existing.getAsMap(), localStartupSettings.getAsMap(), newAuthSettings.getAsMap());
+                }
+
+                transport.execute(new ClusterUpdateSettingsRequest().transientSettings(newAuthSettings),
+                    new ActionListener<ClusterUpdateSettingsResponse>() {
+                        @Override
+                        public void onResponse(ClusterUpdateSettingsResponse clusterUpdateSettingsResponse) {
+                            if (logger.isTraceEnabled()) {
+                                logger.trace("Updated transient authentication settings: {}",
+                                    clusterUpdateSettingsResponse.getTransientSettings().getAsMap());
+                            }
+                        }
+
+                        @Override
+                        public void onFailure(Exception e) {
+                            logger.error("Failed to apply authentication settings from node.", e);
+                        }
+                    });
+            }
+        }
+    }
+
+    private static Settings settingsForUpdate(Settings currentSettings, Settings newSettings) {
+        // First reset the existing HBA settings (auth.host_based.config.) by setting to `null`.
+        // Then put all new settings.
+        Settings.Builder builder = Settings.builder();
+        for (String setting : currentSettings.getAsMap().keySet()) {
+            builder.put(setting, (String) null);
+        }
+        for (Map.Entry<String, String> entry : newSettings.getAsMap().entrySet()) {
+            builder.put(entry.getKey(), entry.getValue());
+        }
+        return builder.build();
+    }
+
+    private boolean isHbaSetting(String setting) {
+        return setting.startsWith("auth.host_based.config.");
     }
 
     static class Matchers {

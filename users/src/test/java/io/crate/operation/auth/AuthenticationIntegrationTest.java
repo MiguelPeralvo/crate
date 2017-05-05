@@ -22,6 +22,8 @@ import io.crate.integrationtests.SQLTransportIntegrationTest;
 import io.crate.shade.org.postgresql.util.PSQLException;
 import io.crate.testing.UseJdbc;
 import org.elasticsearch.common.settings.Settings;
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
 import java.sql.Connection;
@@ -31,18 +33,44 @@ import java.util.Properties;
 @UseJdbc(value = 1)
 public class AuthenticationIntegrationTest extends SQLTransportIntegrationTest {
 
-    @Override
-    protected Settings nodeSettings(int nodeOrdinal) {
+    @After
+    private void cleanUpTransientSettings() {
+        Settings.Builder builder = Settings.builder();
+        for (String setting : authSettings().getAsMap().keySet()) {
+            builder.put(setting, (String) null);
+        }
+        internalCluster().client().admin().cluster()
+            .prepareUpdateSettings()
+            .setTransientSettings(builder)
+            .get();
+    }
+
+    @Before
+    private void setUpTransientSettings() {
+        internalCluster().client().admin().cluster()
+            .prepareUpdateSettings()
+            .setTransientSettings(authSettings())
+            .get();
+    }
+
+    private Settings authSettings() {
         return Settings.builder()
-            .put(super.nodeSettings(nodeOrdinal))
-            .put("network.host", "127.0.0.1")
-            .put("auth.host_based.enabled", true)
             .put("auth.host_based.config",
                 "a", new String[]{"user", "method", "address"}, new String[]{"crate", "trust", "127.0.0.1"})
             .put("auth.host_based.config",
                 "b", new String[]{"user", "method", "address"}, new String[]{"cr8", "trust", "0.0.0.0/0"})
             .put("auth.host_based.config",
                 "c", new String[]{"user", "method", "address"}, new String[]{"foo", "fake", "127.0.0.1/32"})
+            .build();
+    }
+
+    @Override
+    protected Settings nodeSettings(int nodeOrdinal) {
+        return Settings.builder()
+            .put(super.nodeSettings(nodeOrdinal))
+            .put("network.host", "127.0.0.1")
+            .put("license.enterprise", true)
+            .put("auth.host_based.enabled", true)
             .build();
     }
 
