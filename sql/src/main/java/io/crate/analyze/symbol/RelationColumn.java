@@ -91,6 +91,6 @@ public class RelationColumn extends InputColumn {
 
     @Override
     public String toString() {
-        return "RC{relation=" + relationName + ", " + index() + ", type=" + valueType() + "}";
+        return "RC{" + relationName + ", " + index() + ", " + valueType() + "}";
     }
 }
