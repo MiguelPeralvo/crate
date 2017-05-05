@@ -329,7 +329,8 @@ public class TestingHelpers {
         return new BaseMatcher<T>() {
             @Override
             public boolean matches(Object item) {
-                return SQLPrinter.print(item).equals(stmt);
+                String print = SQLPrinter.print(item);
+                return print.equals(stmt);
             }
 
             @Override

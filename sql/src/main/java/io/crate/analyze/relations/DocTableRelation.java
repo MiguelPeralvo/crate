@@ -31,7 +31,6 @@ import io.crate.metadata.ColumnIdent;
 import io.crate.metadata.GeneratedReference;
 import io.crate.metadata.Path;
 import io.crate.metadata.Reference;
-import io.crate.metadata.doc.DocSysColumns;
 import io.crate.metadata.doc.DocTableInfo;
 import io.crate.metadata.table.Operation;
 
@@ -41,7 +40,7 @@ import java.util.Optional;
 
 public class DocTableRelation extends AbstractTableRelation<DocTableInfo> {
 
-    private static final ImmutableSet<ColumnIdent> HIDDEN_COLUMNS = ImmutableSet.of(DocSysColumns.FETCHID);
+    private static final ImmutableSet<ColumnIdent> HIDDEN_COLUMNS = ImmutableSet.of();
     private final static SortValidator SORT_VALIDATOR = new SortValidator();
 
     private static class SortValidator extends SymbolVisitor<DocTableRelation, Void> {

@@ -33,7 +33,6 @@ import io.crate.metadata.TableIdent;
 import io.crate.metadata.doc.DocSysColumns;
 import io.crate.planner.node.fetch.FetchSource;
 import io.crate.sql.tree.QualifiedName;
-import io.crate.types.DataTypes;
 
 import java.util.*;
 
@@ -61,69 +60,54 @@ class MultiSourceFetchPushDown {
         remainingOutputs = statement.querySpec().outputs();
         statement.querySpec().outputs(new ArrayList<>());
 
-        HashMap<Symbol, Symbol> topLevelOutputMap = new HashMap<>(statement.canBeFetched().size());
-        HashMap<Symbol, Symbol> mssOutputMap = new HashMap<>(statement.querySpec().outputs().size() + 2);
-
+        HashMap<Symbol, FetchReference> fetchRefByOriginalSymbol = new HashMap<>();
         ArrayList<Symbol> mssOutputs = new ArrayList<>(
             statement.sources().size() + statement.requiredForQuery().size());
 
         for (Map.Entry<QualifiedName, RelationSource> entry : statement.sources().entrySet()) {
             RelationSource source = entry.getValue();
             if (!(source.relation() instanceof DocTableRelation)) {
-                int index = 0;
-                for (Symbol output : source.querySpec().outputs()) {
-                    RelationColumn rc = new RelationColumn(entry.getKey(), index++, output.valueType());
-                    mssOutputs.add(rc);
-                    mssOutputMap.put(output, rc);
-                    topLevelOutputMap.put(output, new InputColumn(mssOutputs.size() - 1, output.valueType()));
-                }
+                mssOutputs.addAll(source.querySpec().outputs());
                 continue;
             }
 
             DocTableRelation rel = (DocTableRelation) source.relation();
             HashSet<Field> canBeFetched = filterByRelation(statement.canBeFetched(), rel);
             if (!canBeFetched.isEmpty()) {
-                RelationColumn fetchIdColumn = new RelationColumn(entry.getKey(), 0, DataTypes.LONG);
+
+                Field fetchIdColumn = rel.getField(DocSysColumns.FETCHID);
                 mssOutputs.add(fetchIdColumn);
                 InputColumn fetchIdInput = new InputColumn(mssOutputs.size() - 1);
 
                 ArrayList<Symbol> qtOutputs = new ArrayList<>(
                     source.querySpec().outputs().size() - canBeFetched.size() + 1);
+                qtOutputs.add(fetchIdColumn);
                 Reference fetchId = rel.tableInfo().getReference(DocSysColumns.FETCHID);
-                qtOutputs.add(fetchId);
+
+                //qtOutputs.add(fetchId);
 
                 for (Symbol output : source.querySpec().outputs()) {
                     if (!canBeFetched.contains(output)) {
                         qtOutputs.add(output);
-                        RelationColumn rc = new RelationColumn(entry.getKey(),
-                            qtOutputs.size() - 1, output.valueType());
-                        mssOutputs.add(rc);
-                        mssOutputMap.put(output, rc);
-                        topLevelOutputMap.put(output, new InputColumn(mssOutputs.size() - 1, output.valueType()));
+                        mssOutputs.add(output);
                     }
                 }
                 for (Field field : canBeFetched) {
                     FetchReference fr = new FetchReference(
                         fetchIdInput, DocReferences.toSourceLookup(rel.resolveField(field)));
                     allocateFetchedReference(fr, rel);
-                    topLevelOutputMap.put(field, fr);
+                    fetchRefByOriginalSymbol.put(field, fr);
                 }
                 source.querySpec().outputs(qtOutputs);
             } else {
-                int index = 0;
-                for (Symbol output : source.querySpec().outputs()) {
-                    RelationColumn rc = new RelationColumn(entry.getKey(), index++, output.valueType());
-                    mssOutputs.add(rc);
-                    mssOutputMap.put(output, rc);
-                    topLevelOutputMap.put(output, new InputColumn(mssOutputs.size() - 1, output.valueType()));
-                }
+                mssOutputs.addAll(source.querySpec().outputs());
             }
         }
 
         statement.querySpec().outputs(mssOutputs);
-        MappingSymbolVisitor.inPlace().processInplace(remainingOutputs, topLevelOutputMap);
+        MappingSymbolVisitor.inPlace().processInplace(remainingOutputs, fetchRefByOriginalSymbol);
         if (statement.querySpec().orderBy().isPresent()) {
-            MappingSymbolVisitor.inPlace().processInplace(statement.querySpec().orderBy().get().orderBySymbols(), mssOutputMap);
+            MappingSymbolVisitor.inPlace().processInplace(statement.querySpec().orderBy().get().orderBySymbols(), fetchRefByOriginalSymbol);
         }
     }
 
@@ -143,7 +127,7 @@ class MultiSourceFetchPushDown {
             fs = new FetchSource(rel.tableInfo().partitionedByColumns());
             fetchSources.put(fr.ref().ident().tableIdent(), fs);
         }
-        fs.fetchIdCols().add((InputColumn) fr.fetchId());
+        fs.fetchIdCols().add(fr.fetchId());
         if (fr.ref().granularity() == RowGranularity.DOC) {
             fs.references().add(fr.ref());
         }
